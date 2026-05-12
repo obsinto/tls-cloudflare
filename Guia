@@ -1,0 +1,90 @@
+Com certeza! Aqui está o guia completo e consolidado da sua nova arquitetura de rede. Este documento serve como o seu "manual de referência" para manter o sistema rodando ou reconstruí-lo do zero se necessário.
+
+---
+
+# 🛡️ Guia de Configuração: Homelab Zero Trust (Rota Inteligente)
+
+Este guia documenta a solução para o conflito de roteamento onde o PC principal é simultaneamente **Conector** e **Cliente**, utilizando um Moto E4 como **Managed Network Beacon**.
+
+## 1. O "Farol" (Moto E4)
+
+O celular atua como um endpoint TLS. O WARP tenta "pingar" este servidor; se ele responder com o certificado correto, o WARP entende que você está em casa.
+
+### Arquivos no Termux (`~/warp-beacon`)
+
+* **Certificado:** `beacon.crt`
+* **Chave Privada:** `beacon.key`
+* **Hash SHA-256:** `7A14EF589440CE258F32BED95F34776583E435FDD8B06F2797D75548CE000516`
+
+### Script do Servidor (`server.py`)
+
+```python
+import http.server
+import ssl
+
+port = 8443
+server_address = ('0.0.0.0', port)
+
+# Servidor HTTP básico
+httpd = http.server.HTTPServer(server_address, http.server.SimpleHTTPRequestHandler)
+
+# Configuração TLS moderna (Python 3.12+)
+context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+context.load_cert_chain(certfile='beacon.crt', keyfile='beacon.key')
+httpd.socket = context.wrap_socket(httpd.socket, server_side=True)
+
+print(f"WARP Beacon ativo em https://0.0.0.0:{port}")
+httpd.serve_forever()
+
+```
+
+### Comando para Manutenção (Tmux)
+
+Para garantir que o script não morra ao fechar o SSH:
+
+1. `termux-wake-lock` (impede o Android de dormir).
+2. `tmux attach -t beacon` (para ver os logs).
+3. Para sair sem fechar: `Ctrl+B` seguido de `D`.
+
+---
+
+## 2. Painel Cloudflare Zero Trust
+
+Configurações necessárias no dashboard para habilitar a inteligência de rota.
+
+### Network Location
+
+* **Nome:** `Home-WiFi`
+* **Host:Port:** `192.168.31.150:8443`
+* **TLS SHA-256:** `7A14EF589440CE258F32BED95F34776583E435FDD8B06F2797D75548CE000516` (sem dois-pontos).
+
+### Device Profile (Perfil de Dispositivo)
+
+Crie ou edite um perfil com a seguinte regra:
+
+* **Rule:** `Network Location` is `Home-WiFi`.
+* **Split Tunnels:** * Modo: **Exclude IPs and domains**.
+* IPs: Adicionar **`192.168.31.0/24`**.
+
+
+
+---
+
+## 3. O Fluxo de Roteamento
+
+Com essa configuração, o comportamento do seu PC principal muda automaticamente:
+
+* **EM CASA:** O PC detecta o Moto E4 -> Aplica perfil "Home" -> **Exclui** 192.168.31.0/24 do túnel -> Acesso local direto (baixa latência).
+* **NA RUA:** O PC não acha o Moto E4 -> Aplica perfil "Default" -> **Inclui** 192.168.31.0/24 no túnel -> Acesso remoto seguro via `cloudflared`.
+
+---
+
+### Verificação Rápida (Troubleshooting)
+
+Se algo parar de funcionar, rode estes comandos no PC principal:
+
+1. `curl -k https://192.168.31.150:8443` (O Moto E4 está vivo?).
+2. `warp-cli status` (O WARP está em "Managed Network"?).
+3. `traceroute 192.168.31.1` (O primeiro salto é o seu roteador em <1ms?).
+
+Para te ajudar a visualizar como o WARP toma essas decisões de "tunelar ou não tunelar" em tempo real, preparei este simulador interativo da sua nova arquitetura:
